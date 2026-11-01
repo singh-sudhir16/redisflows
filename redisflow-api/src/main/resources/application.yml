@@ -1,0 +1,57 @@
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+  forward-headers-strategy: framework
+
+spring:
+  application:
+    name: redisflow-api
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+      # Regular commands share one multiplexed connection; the pool only serves the few
+      # operations that need a dedicated connection (Pub/Sub subscription, blocking reads).
+      # max-wait makes pool exhaustion fail fast instead of parking request threads forever.
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 16
+          max-wait: 2s
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+  mvc:
+    problemdetails:
+      enabled: true
+
+redisflow:
+  worker:
+    enabled: false
+  maintenance:
+    enabled: false
+  rate-limit:
+    enabled: true
+    limit: 300
+    window: 1m
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

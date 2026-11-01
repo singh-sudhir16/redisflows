@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RedisFlow Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --muted: #8b949e; --text: #c9d1d9;
+    --accent: #58a6ff; --ok: #2ea043; --warn: #d29922; --bad: #f85149; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.45 ui-monospace, "SF Mono", Menlo, monospace; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 20px 16px; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { color: var(--accent); font-size: 1.35em; }
+  h2 { color: var(--muted); font-size: .9em; letter-spacing: .08em; text-transform: uppercase; margin: 22px 0 8px; }
+  a { color: var(--accent); }
+  .pill { font-size: .8em; padding: 3px 10px; border-radius: 999px; color: #fff; background: var(--bad); }
+  .pill.ok { background: var(--ok); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .card .v { font-size: 1.8em; font-weight: 700; color: var(--accent); }
+  .card .l { color: var(--muted); font-size: .8em; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: .85em; }
+  td.num, th.num { text-align: right; }
+  .bad { color: var(--bad); }
+  .scroll { overflow-x: auto; }
+  #events { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; max-height: 360px; overflow-y: auto; }
+  .ev { display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px solid #21262d; }
+  .ev:last-child { border-bottom: 0; }
+  .ev .t { color: var(--muted); min-width: 76px; }
+  .ev .k { min-width: 120px; }
+  .ev .d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .k.completed { color: var(--ok); } .k.dead { color: var(--bad); } .k.retrying { color: var(--purple); }
+  .k.started, .k.enqueued, .k.replayed { color: var(--warn); }
+  .empty { color: var(--muted); padding: 8px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>RedisFlow</h1>
+    <div><a href="/swagger-ui.html">API docs</a> &nbsp; <span id="ws" class="pill">connecting…</span></div>
+  </header>
+
+  <div class="grid">
+    <div class="card"><div class="v" id="backlog">–</div><div class="l">Backlog</div></div>
+    <div class="card"><div class="v" id="inflight">–</div><div class="l">In flight</div></div>
+    <div class="card"><div class="v" id="priority">–</div><div class="l">Priority lane</div></div>
+    <div class="card"><div class="v" id="scheduled">–</div><div class="l">Scheduled</div></div>
+    <div class="card"><div class="v" id="retrying">–</div><div class="l">Retrying</div></div>
+    <div class="card"><div class="v" id="completed">–</div><div class="l">Completed (total)</div></div>
+    <div class="card"><div class="v bad" id="dead">–</div><div class="l">Dead-lettered (total)</div></div>
+    <div class="card"><div class="v" id="visitors">–</div><div class="l">Unique visitors today</div></div>
+  </div>
+
+  <h2>Queues</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Queue</th><th class="num">Backlog</th><th class="num">Pending</th><th class="num">Consumers</th><th class="num">DLQ</th></tr></thead>
+    <tbody id="queues"></tbody>
+  </table></div>
+
+  <h2>Workers</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Worker</th><th>Queues</th><th class="num">In flight</th><th class="num">Concurrency</th><th class="num">Processed</th><th class="num">Failed</th><th>Last seen</th></tr></thead>
+    <tbody id="workers"></tbody>
+  </table></div>
+
+  <h2>Live events</h2>
+  <div id="events"><div class="empty">Waiting for events…</div></div>
+</div>
+
+<script>
+// All server data is rendered with textContent, never innerHTML, so job types or queue
+// names supplied by API clients cannot inject markup into the dashboard.
+const $ = id => document.getElementById(id);
+const fmt = n => Number(n || 0).toLocaleString();
+
+function cell(row, text, cls) {
+  const td = document.createElement('td');
+  td.textContent = text;
+  if (cls) td.className = cls;
+  row.appendChild(td);
+}
+
+function emptyRow(tbody, cols, text) {
+  const tr = document.createElement('tr');
+  const td = document.createElement('td');
+  td.colSpan = cols; td.className = 'empty'; td.textContent = text;
+  tr.appendChild(td); tbody.replaceChildren(tr);
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/v1/dashboard/summary');
+    if (!res.ok) return;
+    const s = await res.json();
+    const o = s.overview;
+    const backlog = o.queues.reduce((a, q) => a + Math.max(0, q.backlog), 0);
+    const pending = o.queues.reduce((a, q) => a + q.pending, 0);
+    $('backlog').textContent = fmt(backlog);
+    $('inflight').textContent = fmt(pending + o.priority_inflight);
+    $('priority').textContent = fmt(o.priority_queued);
+    $('scheduled').textContent = fmt(o.scheduled);
+    $('retrying').textContent = fmt(o.retrying);
+    $('completed').textContent = fmt(o.totals.completed);
+    $('dead').textContent = fmt(o.totals.dead);
+    $('visitors').textContent = fmt(s.unique_visitors_today);
+
+    const qBody = $('queues');
+    if (!o.queues.length) emptyRow(qBody, 5, 'No queues yet');
+    else qBody.replaceChildren(...o.queues.map(q => {
+      const tr = document.createElement('tr');
+      cell(tr, q.name); cell(tr, q.backlog < 0 ? 'n/a' : fmt(q.backlog), 'num'); cell(tr, fmt(q.pending), 'num');
+      cell(tr, fmt(q.consumers), 'num'); cell(tr, fmt(q.dead_letters), q.dead_letters > 0 ? 'num bad' : 'num');
+      return tr;
+    }));
+
+    const wBody = $('workers');
+    if (!s.workers.length) emptyRow(wBody, 7, 'No live workers');
+    else wBody.replaceChildren(...s.workers.map(w => {
+      const tr = document.createElement('tr');
+      cell(tr, w.id); cell(tr, w.queues.join(', ')); cell(tr, fmt(w.inflight), 'num');
+      cell(tr, fmt(w.concurrency), 'num'); cell(tr, fmt(w.processed), 'num');
+      cell(tr, fmt(w.failed), w.failed > 0 ? 'num bad' : 'num');
+      cell(tr, new Date(w.last_seen).toLocaleTimeString());
+      return tr;
+    }));
+  } catch (e) { /* transient; next poll retries */ }
+}
+
+const MAX_EVENTS = 100;
+function addEvent(ev) {
+  const box = $('events');
+  if (box.firstChild && box.firstChild.classList && box.firstChild.classList.contains('empty')) box.replaceChildren();
+  const row = document.createElement('div');
+  row.className = 'ev';
+  const kind = (ev.type || '').split('.')[1] || '';
+  const t = document.createElement('span'); t.className = 't';
+  t.textContent = new Date(ev.timestamp || Date.now()).toLocaleTimeString();
+  const k = document.createElement('span'); k.className = 'k ' + kind; k.textContent = ev.type;
+  const d = document.createElement('span'); d.className = 'd';
+  const parts = [];
+  if (ev.job_type) parts.push(ev.job_type);
+  if (ev.job_id) parts.push(ev.job_id.slice(0, 8));
+  if (ev.queue) parts.push('@' + ev.queue);
+  if (ev.worker_id) parts.push('by ' + ev.worker_id);
+  if (ev.attempt) parts.push('attempt ' + ev.attempt);
+  if (ev.duration_ms !== undefined) parts.push(ev.duration_ms + 'ms');
+  if (ev.error) parts.push('— ' + ev.error);
+  d.textContent = parts.join(' ');
+  row.append(t, k, d);
+  box.prepend(row);
+  while (box.children.length > MAX_EVENTS) box.lastChild.remove();
+}
+
+let retryMs = 500;
+function connect() {
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/events');
+  ws.onopen = () => { retryMs = 500; $('ws').textContent = 'live'; $('ws').className = 'pill ok'; };
+  ws.onmessage = m => { try { addEvent(JSON.parse(m.data)); } catch (e) {} };
+  ws.onclose = () => {
+    $('ws').textContent = 'reconnecting…'; $('ws').className = 'pill';
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 10000);
+  };
+}
+
+connect();
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+redisflow:
+  key-prefix: test
+  retry:
+    base-delay: 50ms
+    max-delay: 100ms
+    jitter: false
+  maintenance:
+    enabled: true
+    poll-interval: 50ms
+    leader-lease-ttl: 3s
+    compaction-interval: 1h
+
+logging:
+  level:
+    io.redisflow: info

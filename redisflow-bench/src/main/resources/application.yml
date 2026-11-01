@@ -1,0 +1,22 @@
+spring:
+  main:
+    banner-mode: off
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 16
+          max-wait: 2s
+
+redisflow:
+  worker:
+    enabled: false
+  maintenance:
+    enabled: false
+
+logging:
+  level:
+    io.redisflow.worker.WorkerEngine: warn

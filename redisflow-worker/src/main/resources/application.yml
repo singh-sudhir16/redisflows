@@ -1,0 +1,55 @@
+# Worker process. Only the actuator is served over HTTP (health, Prometheus metrics).
+server:
+  port: ${PORT:8081}
+
+spring:
+  application:
+    name: redisflow-worker
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 5s
+      # Job threads share one multiplexed connection; the pool serves the fetcher's blocking
+      # XREADGROUP. max-wait makes pool exhaustion fail fast instead of hanging.
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 8
+          max-wait: 2s
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+  # SMTP is optional: set SPRING_MAIL_HOST / SPRING_MAIL_USERNAME / SPRING_MAIL_PASSWORD to send real email.
+  mail:
+    port: ${SPRING_MAIL_PORT:587}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
+redisflow:
+  worker:
+    enabled: true
+    queues: ${REDISFLOW_QUEUES:default,emails,payments,notifications}
+    concurrency: 32
+    visibility-timeout: 60s
+    job-timeout: 30s
+    shutdown-timeout: 25s
+  maintenance:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
